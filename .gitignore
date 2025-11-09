@@ -1,0 +1,90 @@
+# Environment and Secrets
+.env
+.env.*
+*.env
+config.py
+config_*.py
+!config.template.py
+secrets.py
+credentials.py
+
+# WiFi credentials
+wifi_config.py
+network_config.py
+
+# API Keys
+*apikey*
+*api_key*
+*token*
+!*template*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# MicroPython
+*.mpy
+webrepl_cfg.py
+
+# Development
+*.log
+*.swp
+*.swo
+*~
+.DS_Store
+.vscode/
+.idea/
+
+# Testing and output
+test_output/
+recordings/
+audio_samples/
+*.wav
+*.pcm
+
+# Circuit Python
+CIRCUITPY/
+
+# PlatformIO build artifacts
+.pio/
+.pioenvs/
+.piolibdeps/
+.Trashes
+.fseventsd
+.TemporaryItems
+
+# ESP32 specific
+*.bin
+!firmware.bin
+sdkconfig
+sdkconfig.old
+
+# Node.js (for server)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Credentials and personal info
+*password*
+*secret*
+!*template*
+!*example*
