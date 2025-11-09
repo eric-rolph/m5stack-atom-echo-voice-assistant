@@ -1,0 +1,470 @@
+/**
+ * ATOM Echo Voice Assistant - ESP-IDF Implementation
+ * 
+ * Hardware: M5Stack ATOM Echo
+ * - ESP32-PICO-D4
+ * - SPM1423 PDM Microphone (GPIO 23 DATA, GPIO 33 CLK)
+ * - NS4168 I2S Speaker (GPIO 22 DATA, GPIO 19 BCK, GPIO 33 WS)
+ * - SK6812 RGB LED (GPIO 27)
+ * - Button (GPIO 39)
+ */
+
+#include <stdio.h>
+#include <string.h>
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+#include "freertos/event_groups.h"
+#include "esp_system.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_log.h"
+#include "nvs_flash.h"
+#include "driver/gpio.h"
+#include "driver/i2s_std.h"
+#include "driver/i2s_pdm.h"
+#include "driver/rmt_tx.h"
+#include "mbedtls/base64.h"
+#include "led_strip_encoder.h"
+#include "../credentials.h"
+
+static const char *TAG = "ATOM_ECHO";
+
+// Hardware pins
+#define BUTTON_PIN      39
+#define LED_PIN         27
+#define PDM_MIC_CLK     33
+#define PDM_MIC_DATA    23
+#define I2S_SPK_BCK     19
+#define I2S_SPK_WS      33
+#define I2S_SPK_DATA    22
+
+// Audio configuration
+#define SAMPLE_RATE     24000
+#define MIC_BUFFER_SIZE 1024
+#define SPK_BUFFER_SIZE 2048
+
+// WiFi credentials (from credentials.h)
+#ifndef WIFI_SSID
+#error "Please create credentials.h from credentials.h.example"
+#endif
+
+// I2S handles
+static i2s_chan_handle_t mic_chan = NULL;
+static i2s_chan_handle_t spk_chan = NULL;
+
+// WiFi event group
+static EventGroupHandle_t wifi_event_group;
+#define WIFI_CONNECTED_BIT BIT0
+#define WIFI_FAIL_BIT      BIT1
+
+// LED control
+static rmt_channel_handle_t led_chan = NULL;
+static rmt_encoder_handle_t led_encoder = NULL;
+
+// LED colors (GRB format for SK6812)
+typedef struct {
+    uint8_t g;
+    uint8_t r;
+    uint8_t b;
+} led_color_t;
+
+static const led_color_t LED_OFF     = {0x00, 0x00, 0x00};
+static const led_color_t LED_BLUE    = {0x00, 0x00, 0x20};
+static const led_color_t LED_YELLOW  = {0x20, 0x20, 0x00};
+static const led_color_t LED_GREEN   = {0x20, 0x00, 0x00};
+static const led_color_t LED_CYAN    = {0x20, 0x00, 0x20};
+static const led_color_t LED_MAGENTA = {0x00, 0x20, 0x20};
+static const led_color_t LED_RED     = {0x00, 0x20, 0x00};
+
+/**
+ * Initialize SK6812 RGB LED using RMT peripheral
+ */
+static esp_err_t init_led(void)
+{
+    ESP_LOGI(TAG, "Initializing SK6812 LED on GPIO %d", LED_PIN);
+    
+    // RMT TX channel configuration
+    rmt_tx_channel_config_t tx_chan_config = {
+        .clk_src = RMT_CLK_SRC_DEFAULT,
+        .gpio_num = LED_PIN,
+        .mem_block_symbols = 64,
+        .resolution_hz = 10000000, // 10MHz resolution, 1 tick = 0.1us
+        .trans_queue_depth = 4,
+    };
+    ESP_ERROR_CHECK(rmt_new_tx_channel(&tx_chan_config, &led_chan));
+    
+    // LED strip encoder configuration
+    led_strip_encoder_config_t encoder_config = {
+        .resolution = 10000000, // 10MHz
+    };
+    ESP_ERROR_CHECK(rmt_new_led_strip_encoder(&encoder_config, &led_encoder));
+    
+    ESP_ERROR_CHECK(rmt_enable(led_chan));
+    
+    return ESP_OK;
+}
+
+/**
+ * Set LED color
+ */
+static void set_led(led_color_t color)
+{
+    if (!led_chan || !led_encoder) {
+        return;  // LED not initialized yet
+    }
+    
+    rmt_transmit_config_t tx_config = {
+        .loop_count = 0,
+    };
+    
+    uint8_t led_data[3] = {color.g, color.r, color.b};
+    esp_err_t ret = rmt_transmit(led_chan, led_encoder, led_data, sizeof(led_data), &tx_config);
+    if (ret == ESP_OK) {
+        // Wait for transmission to complete
+        rmt_tx_wait_all_done(led_chan, 100);
+    }
+}
+
+/**
+ * WiFi event handler
+ */
+static void wifi_event_handler(void* arg, esp_event_base_t event_base,
+                                int32_t event_id, void* event_data)
+{
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        ESP_LOGI(TAG, "WiFi disconnected, retrying...");
+        set_led(LED_YELLOW);
+        esp_wifi_connect();
+        xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT);
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+        ESP_LOGI(TAG, "WiFi connected! IP: " IPSTR, IP2STR(&event->ip_info.ip));
+        xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
+    }
+}
+
+/**
+ * Initialize WiFi
+ */
+static void init_wifi(void)
+{
+    wifi_event_group = xEventGroupCreate();
+    
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_sta();
+    
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    
+    esp_event_handler_instance_t instance_any_id;
+    esp_event_handler_instance_t instance_got_ip;
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT,
+                                                        ESP_EVENT_ANY_ID,
+                                                        &wifi_event_handler,
+                                                        NULL,
+                                                        &instance_any_id));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT,
+                                                        IP_EVENT_STA_GOT_IP,
+                                                        &wifi_event_handler,
+                                                        NULL,
+                                                        &instance_got_ip));
+    
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid = WIFI_SSID,
+            .password = WIFI_PASSWORD,
+            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+        },
+    };
+    
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
+    
+    ESP_LOGI(TAG, "WiFi init complete, connecting to %s", WIFI_SSID);
+    set_led(LED_YELLOW);
+}
+
+/**
+ * Encode audio to Base64 (demo function) - runs in separate task
+ */
+struct base64_task_params {
+    int16_t *audio_data;
+    size_t sample_count;
+};
+
+static void encode_audio_base64_task(void *pvParameters)
+{
+    struct base64_task_params *params = (struct base64_task_params *)pvParameters;
+    
+    // Calculate Base64 encoded size
+    size_t audio_bytes = params->sample_count * sizeof(int16_t);
+    size_t base64_len = 0;
+    
+    // First call to get required buffer size
+    mbedtls_base64_encode(NULL, 0, &base64_len, (const unsigned char *)params->audio_data, audio_bytes);
+    
+    // Allocate buffer
+    unsigned char *base64_audio = malloc(base64_len + 1);
+    if (!base64_audio) {
+        ESP_LOGE(TAG, "Failed to allocate Base64 buffer");
+        free(params->audio_data);
+        free(params);
+        vTaskDelete(NULL);
+        return;
+    }
+    
+    // Encode to Base64
+    size_t actual_len = 0;
+    int ret = mbedtls_base64_encode(base64_audio, base64_len, &actual_len, 
+                                     (const unsigned char *)params->audio_data, audio_bytes);
+    
+    if (ret == 0) {
+        ESP_LOGI(TAG, "✓ Base64 encoded %d samples → %d bytes", params->sample_count, actual_len);
+        // TODO: Send to OpenAI via WebSocket
+    } else {
+        ESP_LOGE(TAG, "Base64 encoding failed: %d", ret);
+    }
+    
+    free(base64_audio);
+    free(params->audio_data);
+    free(params);
+    vTaskDelete(NULL);
+}
+
+static void encode_audio_base64(const int16_t *audio_data, size_t sample_count)
+{
+    // Allocate task parameters and copy audio data
+    struct base64_task_params *params = malloc(sizeof(struct base64_task_params));
+    if (!params) {
+        ESP_LOGE(TAG, "Failed to allocate task params");
+        return;
+    }
+    
+    params->audio_data = malloc(sample_count * sizeof(int16_t));
+    if (!params->audio_data) {
+        ESP_LOGE(TAG, "Failed to copy audio data");
+        free(params);
+        return;
+    }
+    
+    memcpy(params->audio_data, audio_data, sample_count * sizeof(int16_t));
+    params->sample_count = sample_count;
+    
+    // Create task with 8KB stack
+    xTaskCreate(encode_audio_base64_task, "base64", 8192, params, 5, NULL);
+}
+
+/**
+ * Initialize PDM microphone on I2S0
+ */
+static esp_err_t init_pdm_microphone(void)
+{
+    ESP_LOGI(TAG, "Initializing PDM microphone...");
+    
+    // I2S channel configuration for PDM RX
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
+    ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, NULL, &mic_chan));
+    
+    // PDM RX configuration
+    i2s_pdm_rx_config_t pdm_rx_cfg = {
+        .clk_cfg = I2S_PDM_RX_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
+        .slot_cfg = I2S_PDM_RX_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO),
+        .gpio_cfg = {
+            .clk = PDM_MIC_CLK,
+            .din = PDM_MIC_DATA,
+            .invert_flags = {
+                .clk_inv = false,
+            },
+        },
+    };
+    
+    ESP_ERROR_CHECK(i2s_channel_init_pdm_rx_mode(mic_chan, &pdm_rx_cfg));
+    ESP_ERROR_CHECK(i2s_channel_enable(mic_chan));
+    
+    ESP_LOGI(TAG, "PDM microphone initialized successfully!");
+    return ESP_OK;
+}
+
+/**
+ * Initialize I2S speaker on I2S1
+ */
+static esp_err_t init_i2s_speaker(void)
+{
+    ESP_LOGI(TAG, "Initializing I2S speaker...");
+    
+    // I2S channel configuration for standard TX
+    i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_1, I2S_ROLE_MASTER);
+    ESP_ERROR_CHECK(i2s_new_channel(&chan_cfg, &spk_chan, NULL));
+    
+    // Standard mode configuration for NS4168
+    i2s_std_config_t std_cfg = {
+        .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
+        .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
+        .gpio_cfg = {
+            .mclk = I2S_GPIO_UNUSED,
+            .bclk = I2S_SPK_BCK,
+            .ws = I2S_SPK_WS,
+            .dout = I2S_SPK_DATA,
+            .din = I2S_GPIO_UNUSED,
+            .invert_flags = {
+                .mclk_inv = false,
+                .bclk_inv = false,
+                .ws_inv = false,
+            },
+        },
+    };
+    
+    ESP_ERROR_CHECK(i2s_channel_init_std_mode(spk_chan, &std_cfg));
+    ESP_ERROR_CHECK(i2s_channel_enable(spk_chan));
+    
+    ESP_LOGI(TAG, "I2S speaker initialized successfully!");
+    return ESP_OK;
+}
+
+/**
+ * Test PDM microphone by reading samples
+ */
+static void test_pdm_microphone(void)
+{
+    ESP_LOGI(TAG, "Testing PDM microphone...");
+    
+    int16_t audio_buffer[MIC_BUFFER_SIZE];
+    size_t bytes_read = 0;
+    
+    // Read audio samples
+    esp_err_t ret = i2s_channel_read(mic_chan, audio_buffer, sizeof(audio_buffer), &bytes_read, 1000);
+    
+    if (ret == ESP_OK) {
+        int samples_read = bytes_read / sizeof(int16_t);
+        ESP_LOGI(TAG, "Read %d samples (%d bytes)", samples_read, bytes_read);
+        
+        // Count non-zero samples
+        int non_zero = 0;
+        int16_t max_val = 0;
+        int16_t min_val = 0;
+        
+        for (int i = 0; i < samples_read; i++) {
+            if (audio_buffer[i] != 0) {
+                non_zero++;
+            }
+            if (audio_buffer[i] > max_val) max_val = audio_buffer[i];
+            if (audio_buffer[i] < min_val) min_val = audio_buffer[i];
+        }
+        
+        float non_zero_pct = (float)non_zero / samples_read * 100.0f;
+        ESP_LOGI(TAG, "Non-zero samples: %d / %d (%.1f%%)", non_zero, samples_read, non_zero_pct);
+        ESP_LOGI(TAG, "Sample range: [%d, %d]", min_val, max_val);
+        
+        if (non_zero_pct > 50.0f) {
+            ESP_LOGI(TAG, "✓ PDM microphone is working!");
+            
+            // TODO: Base64 encoding causes stack overflow - need to implement differently
+            // ESP_LOGI(TAG, "Testing Base64 encoding...");
+            // encode_audio_base64(audio_buffer, samples_read);
+        } else {
+            ESP_LOGW(TAG, "⚠ PDM microphone may not be working properly");
+        }
+    } else {
+        ESP_LOGE(TAG, "Failed to read from microphone: %s", esp_err_to_name(ret));
+    }
+}
+
+/**
+ * Button press task
+ */
+static void button_task(void *arg)
+{
+    gpio_config_t io_conf = {
+        .pin_bit_mask = (1ULL << BUTTON_PIN),
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&io_conf);
+    
+    bool last_state = true;
+    
+    while (1) {
+        bool current_state = gpio_get_level(BUTTON_PIN);
+        
+        // Button pressed (active low)
+        if (last_state == true && current_state == false) {
+            vTaskDelay(pdMS_TO_TICKS(50)); // Debounce
+            if (gpio_get_level(BUTTON_PIN) == false) {
+                ESP_LOGI(TAG, "Button pressed!");
+                set_led(LED_MAGENTA);
+                
+                // Test microphone on button press
+                test_pdm_microphone();
+                
+                set_led(LED_GREEN);
+            }
+        }
+        
+        last_state = current_state;
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+/**
+ * Main application entry point
+ */
+void app_main(void)
+{
+    ESP_LOGI(TAG, "\n\n=== ATOM Echo Voice Assistant ===");
+    ESP_LOGI(TAG, "Build: PlatformIO + ESP-IDF");
+    ESP_LOGI(TAG, "ESP-IDF Version: %s", esp_get_idf_version());
+    
+    // Initialize NVS
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+    
+    // Initialize LED
+    set_led(LED_BLUE);
+    ESP_ERROR_CHECK(init_led());
+    
+    // Initialize WiFi
+    init_wifi();
+    
+    // Wait for WiFi connection
+    EventBits_t bits = xEventGroupWaitBits(wifi_event_group,
+                                           WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+                                           pdFALSE,
+                                           pdFALSE,
+                                           portMAX_DELAY);
+    
+    if (bits & WIFI_CONNECTED_BIT) {
+        ESP_LOGI(TAG, "WiFi connected!");
+        set_led(LED_CYAN);
+    } else {
+        ESP_LOGE(TAG, "WiFi connection failed!");
+        set_led(LED_RED);
+        return;
+    }
+    
+    // Initialize PDM microphone (NEW ESP-IDF I2S driver with PDM support!)
+    ESP_ERROR_CHECK(init_pdm_microphone());
+    
+    // Initialize I2S speaker
+    ESP_ERROR_CHECK(init_i2s_speaker());
+    
+    // Ready!
+    ESP_LOGI(TAG, "Setup complete - Ready!");
+    set_led(LED_GREEN);
+    
+    // Start button task
+    xTaskCreate(button_task, "button_task", 4096, NULL, 5, NULL);
+    
+    // Test microphone automatically
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    test_pdm_microphone();
+}
