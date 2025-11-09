@@ -1,0 +1,48 @@
+// Configuration Template for ATOM Echo Voice Assistant
+// Copy this file to config.h and fill in your credentials
+
+#ifndef CONFIG_H
+#define CONFIG_H
+
+// WiFi Configuration
+#define WIFI_SSID "your_wifi_ssid_here"
+#define WIFI_PASSWORD "your_wifi_password_here"
+#define WIFI_TIMEOUT_MS 15000
+#define MAX_WIFI_RETRIES 3
+
+// OpenAI API Configuration
+#define OPENAI_API_KEY "sk-proj-your-openai-api-key-here"
+#define REALTIME_MODEL "gpt-4o-realtime-preview-2024-10-01"
+
+// Hardware Pin Configuration
+#define BUTTON_PIN 39
+#define LED_PIN 27
+#define LED_COUNT 1
+
+// PDM Microphone Pins (SPM1423)
+#define PDM_MIC_CLK 33
+#define PDM_MIC_DATA 23
+
+// I2S Speaker Pins (NS4168)
+#define I2S_SPK_BCK 19
+#define I2S_SPK_WS 33   // Shared with PDM CLK
+#define I2S_SPK_DATA 22
+
+// Audio Configuration
+#define SAMPLE_RATE 24000  // OpenAI Realtime API requirement
+#define BITS_PER_SAMPLE 16
+#define CHANNELS 1
+
+// Buffer Configuration
+#define MIC_BUFFER_SIZE 1024
+#define SPK_BUFFER_SIZE 2048
+
+// WebSocket Configuration
+#define WS_RECONNECT_INTERVAL 5000
+#define WS_PING_INTERVAL 30000
+
+// Debug
+#define DEBUG_SERIAL true
+#define SERIAL_BAUD 115200
+
+#endif // CONFIG_H
