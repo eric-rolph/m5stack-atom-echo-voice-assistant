@@ -1,415 +1,251 @@
-# M5Stack ATOM Echo - OpenAI Realtime Voice Assistant# M5Stack Atom Echo - Voice AI Gateway
+# M5Stack ATOM Echo - Voice AI Gateway
 
+Real-time voice assistant powered by OpenAI's Realtime API for the M5Stack ATOM Echo (ESP32). Multiple implementation approaches with full hardware support.
 
+## 🎯 Project Status
 
-A standalone voice assistant for the M5Stack ATOM Echo.
+**Current State:** Three working implementations with different trade-offs:
 
+- ✅ **ESP-IDF (PlatformIO)** - Full hardware support, WebSocket ready, production candidate
+- ✅ **MicroPython** - Networking works, audio blocked by I2S PDM limitation  
+- ✅ **Arduino** - Full hardware access, but WebSocket challenges for Realtime API
 
-
-## 🎯 Project Status## Architecture
-
-
-
-**Current State:** MicroPython networking code fully functional (WiFi, WebSocket, OpenAI API integration working). **Microphone blocked** due to MicroPython's I2S driver not supporting PDM mode.```
-
-[M5Stack Echo] --WiFi--> [Python Server] --API--> [OpenAI/Gemini]
-
-**Next Steps:** Migration to Arduino/ESP-IDF for full PDM microphone support.   Audio I/O              Voice Processing        AI Services
-
-```
+**Recommended:** ESP-IDF implementation for production use
 
 ## 📋 Features
 
-## Features
+### Hardware Support
+- 🎤 **PDM Microphone** - SPM1423 working (ESP-IDF only)
+- 🔊 **I2S Speaker** - NS4168 amplifier with audio playback
+- 💡 **RGB LED** - SK6812 with multiple status indicators
+- 🔘 **Button** - Press-to-talk and function control
 
-### ✅ Working (MicroPython)
-
-- ✅ Stable WiFi connection with automatic reconnection- 🎤 **Press-to-talk** voice recording
-
-- ✅ WebSocket client with persistent connection- 🗣️ **Speech-to-Text** via OpenAI Whisper
-
-- ✅ OpenAI Realtime API integration- 🤖 **AI Conversation** via ChatGPT or Gemini
-
-- ✅ Base64 audio encoding/decoding- 🔊 **Text-to-Speech** via OpenAI TTS
-
-- ✅ Session configuration and event handling- 💡 **LED Indicators** (status feedback)
-
-- ✅ Button control and LED status indicators- 🔄 **Conversation Context** memory
-
-- ✅ I2S speaker initialization
-
-## Quick Start
-
-### ⚠️ Blocked (MicroPython)
-
-- ❌ PDM microphone input (I2S driver limitation)### 1. Hardware Setup
-
-
-
-### 🚧 Planned (Arduino/ESP-IDF)- M5Stack Atom Echo connected via USB
-
-- 🔄 Port networking code to Arduino- WiFi network available
-
-- 🔄 Enable PDM microphone with ESP-IDF I2S driver- Speaker/headphones (optional, has built-in speaker)
-
-- 🔄 Complete end-to-end voice interaction
-
-### 2. Server Setup
+### Software Features  
+- 🌐 **WiFi** - Stable connection with auto-reconnect
+- 🔌 **WebSocket** - Client ready for OpenAI Realtime API
+- 🎙️ **Audio I/O** - PDM input, I2S output with proper buffering
+- 📡 **Base64** - Audio encoding for API transmission
+- 🔐 **TLS/SSL** - Secure connections
 
 ## 🛠️ Hardware
 
-```bash
+**Device:** M5Stack ATOM Echo (ESP32-PICO-D4)
 
-**Device:** M5Stack ATOM Echo (ESP32-PICO-D4)cd server
+**Specifications:**
+- ESP32-PICO-D4: 240MHz Dual Core, 4MB Flash
+- SPM1423 PDM Microphone (GPIO33=CLK, GPIO23=DATA)  
+- NS4168 I2S Speaker (GPIO19=BCK, GPIO33=WS, GPIO22=DATA)
+- SK6812 RGB LED (GPIO27)
+- Button (GPIO39)
 
-- **CPU:** ESP32-PICO-D4, 240MHz Dual Core
+**Key Detail:** GPIO33 is shared between mic clock and speaker WS - handled through careful I2S channel management.
 
-- **Flash:** 4MB# Install dependencies
+## 📁 Project Structure
 
-- **Microphone:** SPM1423 PDM MEMS (GPIO33=CLK, GPIO23=DATA)pip install -r requirements.txt
+\\\
+m5stack-atom-echo-voice-assistant/
+├── platformio-espidf/           # ⭐ ESP-IDF implementation (RECOMMENDED)
+│   ├── src/main.c              # Complete working firmware
+│   ├── platformio.ini          # PlatformIO configuration
+│   ├── credentials.h           # WiFi/API credentials (gitignored)
+│   ├── credentials.h.example   # Template for credentials
+│   ├── DEPLOYMENT_STATUS.md    # Current implementation status
+│   ├── PIN_CONFIGURATION.md    # Hardware wiring guide
+│   └── components/             # ESP WebSocket client component
+├── arduino/                     # Arduino C++ implementation
+│   ├── atom_echo_voice/        # Arduino sketch
+│   ├── config.h.example        # Configuration template
+│   ├── SETUP_INSTRUCTIONS.md   # Arduino IDE setup guide
+│   └── ARCHITECTURAL_BLOCKER.md # WebSocket limitations
+├── micropython/                 # MicroPython implementation
+│   ├── main.py                 # Complete networking code
+│   ├── README.md               # MicroPython-specific docs
+│   └── test_*.py               # Diagnostic utilities
+├── server/                      # Python backend server
+│   ├── main.py                 # FastAPI server
+│   ├── requirements.txt        # Python dependencies
+│   └── .env.example            # Server configuration template
+└── firmware/                    # Legacy/experimental builds
+\\\
 
-- **Speaker:** NS4168 I2S Amplifier (GPIO19=BCK, GPIO33=WS, GPIO22=DATA)
+## 🚀 Quick Start
 
-- **Button:** GPIO39# Configure API keys
+### Prerequisites
 
-- **LED:** SK6812 RGB (GPIO27)cp .env.example .env
+- M5Stack ATOM Echo connected via USB
+- PlatformIO installed (VS Code extension recommended)
+- WiFi network (2.4GHz)
+- OpenAI API key
 
-# Edit .env and add your API keys
+### Option A: ESP-IDF (Recommended)
 
-**Pinout:**
+\\\ash
+# 1. Clone repository
+git clone https://github.com/eric-rolph/m5stack-atom-echo-voice-assistant.git
+cd m5stack-atom-echo-voice-assistant/platformio-espidf
 
-```# Run server
+# 2. Configure credentials
+cp credentials.h.example credentials.h
+# Edit credentials.h with your WiFi SSID, password, and OpenAI API key
 
-PDM Microphone (SPM1423):python main.py
+# 3. Build and upload
+pio run --target upload --upload-port COM9
 
-  - Clock:  GPIO33 (shared with speaker WS)```
+# 4. Monitor output
+pio device monitor -b 115200
+\\\
 
-  - Data:   GPIO23
+### Option B: Arduino IDE
 
-Server will start on `http://0.0.0.0:8000`
+\\\ash
+# See arduino/SETUP_INSTRUCTIONS.md for detailed setup
+\\\
 
-I2S Speaker (NS4168):
+### Option C: MicroPython
 
-  - BCK:    GPIO19### 3. Firmware Setup
+\\\ash
+# See micropython/README.md - note: microphone won't work
+\\\
 
-  - WS/LRC: GPIO33 (shared with mic clock)
+## 🎨 LED Status Indicators
 
-  - DATA:   GPIO22**Option A: PlatformIO (Recommended)**
+| Color | Status |
+|-------|--------|
+| 🔵 Blue | Initializing / Startup |
+| 🟡 Yellow | Connecting to WiFi |
+| 🟢 Green | Connected and Ready |
+| 🟣 Magenta | Button Pressed |
+| 🔴 Red | Error |
 
-```bash
+## 🔧 Configuration
 
-Control:cd firmware
+### ESP-IDF (\credentials.h\)
 
-  - Button: GPIO39pio run --target upload --upload-port COM9
+\\\c
+#define WIFI_SSID "YourWiFiName"
+#define WIFI_PASSWORD "YourWiFiPassword"
+#define OPENAI_API_KEY "sk-your-api-key"
+#define REALTIME_MODEL "gpt-4o-realtime-preview-2024-10-01"
+\\\
 
-  - LED:    GPIO27```
+### Server (\.env\)
 
-```
-
-**Option B: Arduino IDE**
-
-## 📁 Project Structure1. Open `firmware/echo_voice_gateway.ino`
-
-2. Install libraries: M5Atom, ArduinoJson
-
-```3. Select Board: "M5Stack Atom" or "M5StickC"
-
-echo-voice-gateway/4. Update WiFi credentials in code
-
-├── micropython/                  # MicroPython implementation5. Update SERVER_URL to your computer's IP
-
-│   ├── config.template.py       # Configuration template6. Upload to COM9
-
-│   ├── config_realtime.py       # Your config (gitignored)
-
-│   ├── main_improved.py         # Complete working implementation### 4. Configuration
-
-│   ├── main_realtime.py         # Earlier version
-
-│   ├── test_pdm_fixed.py        # PDM microphone test**Firmware (`echo_voice_gateway.ino`):**
-
-│   └── micropython-esp32.bin    # MicroPython v1.21.0 firmware```cpp
-
-├── arduino/                      # Arduino/ESP-IDF (planned)const char *WIFI_SSID = "YourWiFiName";
-
-├── circuitpython/               # CircuitPython experimentsconst char *WIFI_PASSWORD = "YourWiFiPassword";
-
-│   └── circuitpython-*.bin      # CircuitPython firmwareconst char *SERVER_URL = "http://192.168.1.100:8000/api/voice";
-
-├── server/                      # Development server (deprecated)```
-
-└── docs/                        # Documentation
-
-```**Server (`.env`):**
-
-```bash
-
-## 🚀 Quick Start (MicroPython)OPENAI_API_KEY=sk-...
-
+\\\ash
+OPENAI_API_KEY=sk-...
 GEMINI_API_KEY=...
-
-### 1. PrerequisitesAI_PROVIDER=openai  # or gemini
-
-```
-
-```bash
-
-pip install esptool ampy pyserial## Usage
-
-```
-
-1. **Power on** M5Stack Echo
-
-### 2. Flash MicroPython2. **Wait for green LED** (connected and ready)
-
-3. **Press and hold button** to record (red LED)
-
-```bash4. **Release button** to send (yellow LED)
-
-cd micropython5. **Listen to AI response** (blue LED)
-
-python -m esptool --chip esp32 --port COM9 erase_flash
-
-python -m esptool --port COM9 write_flash -z 0x1000 micropython-esp32.bin## LED Status
-
-```
-
-- 🟢 **Green** - Ready/Idle
-
-### 3. Configure- 🔴 **Red** - Recording
-
-- 🟡 **Yellow** - Processing/Sending
-
-```bash- 🔵 **Blue** - Playing response
-
-cp config.template.py config_realtime.py- 🟣 **Purple** - Error
-
-# Edit config_realtime.py with your WiFi and OpenAI API credentials
-
-```## API Endpoints
-
-
-
-### 4. Upload Code### `POST /api/voice`
-
-Main voice processing endpoint
-
-```bash- **Input**: Raw PCM audio (16kHz, 16-bit, mono)
-
-ampy --port COM9 put config_realtime.py- **Output**: PCM audio response
-
-ampy --port COM9 put main_improved.py main.py- **Headers**: 
-
-```  - `X-Transcription`: What you said
-
-  - `X-AI-Response`: What AI replied
-
-### 5. Test (Note: Microphone won't work in MicroPython)
-
-### `GET /`
-
-```bashHealth check
-
-python -m esptool --chip esp32 --port COM9 run
-
-# Device will connect to WiFi and OpenAI Realtime API### `POST /api/clear-history`
-
-# Speaker works, but microphone returns zeros due to PDM limitationClear conversation context
-
-```
-
-### `GET /api/history`
-
-## 🔍 Technical DetailsView conversation history (debug)
-
-
-
-### Why MicroPython Doesn't Work for PDM## Troubleshooting
-
-
-
-The M5Stack ATOM Echo uses a **SPM1423 PDM MEMS microphone**, which requires the ESP32's I2S peripheral to be configured in **PDM mode**. MicroPython's I2S driver (`machine.I2S`) only supports standard I2S protocol and **does not expose the `I2S_MODE_PDM` flag** needed for PDM microphones.**WiFi won't connect:**
-
-- Check SSID/password in firmware
-
-**Arduino/ESP-IDF Solution:**- Verify 2.4GHz network (ESP32 doesn't support 5GHz)
-
-```cpp
-
-// This works in Arduino/ESP-IDF but not MicroPython**Server connection fails:**
-
-i2s_config_t i2s_config = {- Find your computer's IP: `ipconfig` (Windows) or `ifconfig` (Mac/Linux)
-
-    .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX | I2S_MODE_PDM),- Update SERVER_URL in firmware with correct IP
-
-    // ... other config- Disable firewall temporarily to test
-
-};
-
-```**Audio quality issues:**
-
-- Speak clearly and close to device
-
-### MicroPython Achievements- Reduce background noise
-
-- Increase MAX_RECORD_TIME_MS if cutting off
-
-Despite the microphone limitation, we successfully implemented:
-
-**API errors:**
-
-1. **Stable WiFi Connection**- Verify API keys are valid
-
-   - ESP-IDF-style reconnection handling- Check API quotas/billing
-
-   - Automatic retry with exponential backoff- Review server logs: `python main.py`
-
-   - Clean disconnect on errors
-
-## Development
-
-2. **WebSocket Client**
-
-   - Persistent connection management**Add new AI provider:**
-
-   - Background message handler1. Add client initialization in `main.py`
-
-   - Automatic reconnection2. Create `get_ai_response_<provider>()` function
-
-   - Proper SSL/TLS handling3. Update AI_PROVIDER environment variable
-
-
-
-3. **OpenAI Realtime API****Change TTS voice:**
-
-   - Session configurationEdit in `text_to_speech()`:
-
-   - Base64 audio encoding```python
-
-   - Event handling (session.created, response.audio.delta, etc.)voice="alloy"  # alloy, echo, fable, onyx, nova, shimmer
-
-   - Authentication with API key```
-
-
-
-4. **Audio Processing****Adjust recording time:**
-
-   - I2S speaker initialization (working)```cpp
-
-   - Base64 decoding of received audio#define MAX_RECORD_TIME_MS 5000  // milliseconds
-
-   - Buffer management```
-
-
-
-## 📚 References## Requirements
-
-
-
-### Documentation### Server
-
-- [M5Stack ATOM Echo Docs](https://docs.m5stack.com/en/atom/atomecho)- Python 3.8+
-
-- [SPM1423 Datasheet](https://m5stack.oss-cn-shenzhen.aliyuncs.com/resource/docs/datasheet/core/SPM1423HM4H-B_datasheet_en.pdf)- OpenAI API key (for Whisper + TTS + ChatGPT)
-
-- [OpenAI Realtime API](https://platform.openai.com/docs/guides/realtime)- OR Gemini API key (for AI only, still needs OpenAI for Whisper/TTS)
-
-- [ESP32 I2S Driver](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/api-reference/peripherals/i2s.html)
-
-### Firmware
-
-### Repositories- PlatformIO OR Arduino IDE
-
-- [M5Stack ATOM Examples](https://github.com/m5stack/M5Atom)- M5Atom library
-
-- [M5Stack ATOM Echo Examples](https://github.com/m5stack/M5Atom/tree/master/examples/Echo)- ArduinoJson library
-
-
-
-## 🔧 Development## License
-
-
-
-### Serial MonitorMIT - Feel free to modify and use!
-
-```bash
-
-# Windows## Credits
-
-python -c "import serial; s = serial.Serial('COM9', 115200); [print(s.read(1024).decode('utf-8', errors='ignore'), end='') for _ in range(1000)]"
-
-Based on M5Stack EchoRest example
-
-# Reset deviceUses OpenAI Whisper, ChatGPT, TTS APIs
-
-python -m esptool --chip esp32 --port COM9 runUses Google Gemini API
-
-```
-
-### File Management
-```bash
-# Upload file
-ampy --port COM9 put filename.py
-
-# Download file
-ampy --port COM9 get main.py
-
-# List files
-ampy --port COM9 ls
-
-# Run REPL
-ampy --port COM9 repl
-```
-
-## 🐛 Known Issues
-
-1. **PDM Microphone Not Working (MicroPython)**
-   - Root Cause: MicroPython I2S driver doesn't support PDM mode
-   - Status: Confirmed with M5Stack examples and ESP-IDF documentation
-   - Solution: Migrate to Arduino/ESP-IDF
-
-2. **CircuitPython Boot Loop**
-   - Attempted CircuitPython for PDM support
-   - Firmware flashes but device won't boot (address 0x0 vs 0x1000 issue)
-   - Not pursuing further
-
-## 🎯 Next Steps
-
-1. **Arduino Migration** (In Progress)
-   - Set up Arduino IDE with ESP32 board support
-   - Port MicroPython networking code to Arduino C++
-   - Use ESP-IDF I2S driver with PDM mode for microphone
-   - Implement WebSocket client (WebSocketsClient library)
-   - Port OpenAI Realtime API integration
-   - Test complete voice interaction loop
-
-2. **Testing & Optimization**
-   - Verify PDM microphone audio quality
-   - Optimize buffer sizes for latency
-   - Test extended conversations
-   - Battery life optimization
-
-3. **Features**
-   - Voice activity detection (VAD)
-   - Push-to-talk vs always-listening modes
-   - Custom wake word
-   - OTA firmware updates
+AI_PROVIDER=openai  # or gemini
+TTS_PROVIDER=openai
+HOST=0.0.0.0
+PORT=8000
+\\\
+
+## 📊 Implementation Comparison
+
+| Feature | ESP-IDF | Arduino | MicroPython |
+|---------|---------|---------|-------------|
+| PDM Mic | ✅ Full | ✅ Full | ❌ No PDM |
+| I2S Speaker | ✅ Yes | ✅ Yes | ✅ Yes |
+| WebSocket | ✅ Component | ⚠️ Limited | ✅ uwebsockets |
+| Memory | ✅ Efficient | ⚠️ Tight | ⚠️ Limited |
+| TLS/SSL | ✅ Native | ✅ Native | ✅ Native |
+| Development | Medium | Easy | Easy |
+| **Recommended** | **✅ Yes** | For prototypes | Learning only |
+
+## 🐛 Known Issues & Solutions
+
+### ESP-IDF
+- ✅ All hardware working
+- 🔄 WebSocket Realtime API integration in progress
+
+### Arduino  
+- ✅ Hardware fully functional
+- ⚠️ WebSocket library limitations for Realtime API (see ARCHITECTURAL_BLOCKER.md)
+
+### MicroPython
+- ❌ PDM microphone unsupported (I2S driver limitation)
+- ✅ All networking code functional
+- Not recommended for this project
+
+## 🔍 Technical Details
+
+### Why ESP-IDF is Recommended
+
+1. **Native PDM Support** - I2S driver exposes \I2S_MODE_PDM\ flag
+2. **WebSocket Component** - Official esp_websocket_client with reconnection
+3. **Memory Management** - Direct control over FreeRTOS heap
+4. **SSL/TLS** - ESP-TLS with certificate bundle support
+5. **Production Ready** - Battle-tested framework for IoT devices
+
+### Audio Pipeline
+
+\\\
+PDM Mic → I2S RX → 16-bit PCM → Base64 → WebSocket → OpenAI
+OpenAI → WebSocket → Base64 Decode → PCM → I2S TX → Speaker
+\\\
+
+### GPIO Sharing Solution
+
+GPIO33 serves dual purpose:
+- **Microphone:** PDM Clock (I2S0 RX)
+- **Speaker:** Word Select/LRC (I2S1 TX)
+
+This works because ESP32 has two I2S peripherals (I2S0, I2S1) with independent pin configurations.
+
+## 📚 Documentation
+
+- [DEPLOYMENT_STATUS.md](platformio-espidf/DEPLOYMENT_STATUS.md) - Current implementation details
+- [PIN_CONFIGURATION.md](platformio-espidf/PIN_CONFIGURATION.md) - Complete wiring guide
+- [ARCHITECTURAL_BLOCKER.md](arduino/ARCHITECTURAL_BLOCKER.md) - Arduino WebSocket challenges
+- [SETUP_INSTRUCTIONS.md](arduino/SETUP_INSTRUCTIONS.md) - Arduino IDE setup
+- [micropython/README.md](micropython/README.md) - MicroPython implementation notes
+
+## 🎯 Roadmap
+
+### Phase 1: Hardware Validation ✅
+- [x] PDM microphone working
+- [x] I2S speaker working  
+- [x] LED control
+- [x] Button input
+- [x] WiFi connection
+
+### Phase 2: API Integration 🔄
+- [x] WebSocket client
+- [x] Base64 encoding
+- [ ] OpenAI Realtime API handshake
+- [ ] Bidirectional audio streaming
+- [ ] Session management
+
+### Phase 3: Polish 📋
+- [ ] Voice activity detection
+- [ ] Wake word support
+- [ ] OTA updates
+- [ ] Battery optimization
+
+## 🤝 Contributing
+
+Contributions welcome! Areas of interest:
+- OpenAI Realtime API integration
+- Audio processing optimization
+- Power management
+- Documentation improvements
 
 ## 📄 License
 
-MIT License - See LICENSE file for details
+MIT License - see [LICENSE](LICENSE) for details
 
 ## 🙏 Acknowledgments
 
-- M5Stack for excellent hardware and examples
-- OpenAI for the Realtime API
-- MicroPython and ESP-IDF communities
-- All the forum posts and GitHub issues that helped solve PDM mysteries
+- **M5Stack** - Excellent hardware and examples
+- **Espressif** - ESP-IDF framework and I2S drivers
+- **OpenAI** - Realtime API
+- **Community** - Forum posts and GitHub issues that solved PDM mysteries
 
 ## 📞 Support
 
-For issues, questions, or contributions, please open an issue on GitHub.
+- **Issues:** [GitHub Issues](https://github.com/eric-rolph/m5stack-atom-echo-voice-assistant/issues)
+- **Hardware Docs:** [M5Stack ATOM Echo](https://docs.m5stack.com/en/atom/atomecho)
+- **API Docs:** [OpenAI Realtime API](https://platform.openai.com/docs/guides/realtime)
 
 ---
 
-**Note:** This project is in active development. The MicroPython implementation works for everything except the microphone. Arduino/ESP-IDF migration is required for full functionality.
+**Status:** Active development - ESP-IDF implementation recommended for production use
