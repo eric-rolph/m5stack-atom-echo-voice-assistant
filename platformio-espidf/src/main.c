@@ -378,10 +378,11 @@ static void test_pdm_microphone(void)
  */
 static void button_task(void *arg)
 {
+    // GPIO 39 is input-only and has external pull-up, so don't enable internal pull-up
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << BUTTON_PIN),
         .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_up_en = GPIO_PULLUP_DISABLE,  // External pull-up on GPIO 39
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
@@ -461,8 +462,8 @@ void app_main(void)
     ESP_LOGI(TAG, "Setup complete - Ready!");
     set_led(LED_GREEN);
     
-    // Start button task
-    xTaskCreate(button_task, "button_task", 4096, NULL, 5, NULL);
+    // Start button task with larger stack to prevent overflow during I2S operations
+    xTaskCreate(button_task, "button_task", 8192, NULL, 5, NULL);
     
     // Test microphone automatically
     vTaskDelay(pdMS_TO_TICKS(2000));
