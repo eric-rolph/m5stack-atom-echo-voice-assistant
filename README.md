@@ -2,7 +2,7 @@
 
 
 
-A standalone voice assistant for the M5Stack ATOM Echo using OpenAI's Realtime API with WebSocket streaming audio.A complete voice assistant system using M5Stack Atom Echo as an audio gateway to OpenAI and Google Gemini APIs.
+A standalone voice assistant for the M5Stack ATOM Echo.
 
 
 
