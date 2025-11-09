@@ -23,7 +23,9 @@
 #include "driver/i2s_std.h"
 #include "driver/i2s_pdm.h"
 #include "driver/rmt_tx.h"
-#include "mbedtls/base64.h"
+#include "esp_http_client.h"
+#include "esp_crt_bundle.h"
+#include "cJSON.h"
 #include "led_strip_encoder.h"
 #include "../credentials.h"
 
@@ -42,6 +44,21 @@ static const char *TAG = "ATOM_ECHO";
 #define SAMPLE_RATE     24000
 #define MIC_BUFFER_SIZE 1024
 #define SPK_BUFFER_SIZE 2048
+
+// Voice assistant configuration
+#define MAX_RECORDING_DURATION_MS 5000   // 5 seconds max recording (120KB at 24kHz)
+#define AUDIO_CHUNK_SIZE 1024            // Samples per chunk for streaming
+#define HTTP_RESPONSE_BUFFER_SIZE 16384  // 16KB buffer for API responses
+
+// Recording state
+static bool is_recording = false;
+static int16_t *recording_buffer = NULL;
+static size_t recording_buffer_size = 0;
+static size_t recording_position = 0;
+
+// HTTP response buffer
+static char *http_response_buffer = NULL;
+static size_t http_response_len = 0;
 
 // WiFi credentials (from credentials.h)
 #ifndef WIFI_SSID
@@ -189,75 +206,375 @@ static void init_wifi(void)
 }
 
 /**
+ * HTTP event handler for API responses
+ */
+static esp_err_t http_event_handler(esp_http_client_event_t *evt)
+{
+    switch (evt->event_id) {
+        case HTTP_EVENT_ON_DATA:
+            if (http_response_buffer && http_response_len + evt->data_len < HTTP_RESPONSE_BUFFER_SIZE) {
+                memcpy(http_response_buffer + http_response_len, evt->data, evt->data_len);
+                http_response_len += evt->data_len;
+                http_response_buffer[http_response_len] = '\0';
+            }
+            break;
+        default:
+            break;
+    }
+    return ESP_OK;
+}
+
+/**
+ * Get AI response from OpenAI Chat Completions API
+ */
+static char* get_ai_response(const char *transcription)
+{
+    ESP_LOGI(TAG, "Getting AI response for: %s", transcription);
+    
+    // Allocate response buffer
+    http_response_buffer = malloc(HTTP_RESPONSE_BUFFER_SIZE);
+    if (!http_response_buffer) {
+        ESP_LOGE(TAG, "Failed to allocate response buffer");
+        return NULL;
+    }
+    http_response_len = 0;
+    
+    // Prepare authorization header
+    char auth_header[256];
+    snprintf(auth_header, sizeof(auth_header), "Bearer %s", OPENAI_API_KEY);
+    
+    // Build request body
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "model", "gpt-4o-mini");
+    
+    cJSON *messages = cJSON_CreateArray();
+    cJSON *system_msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(system_msg, "role", "system");
+    cJSON_AddStringToObject(system_msg, "content", 
+        "You are a helpful voice assistant. Keep responses concise and conversational.");
+    cJSON_AddItemToArray(messages, system_msg);
+    
+    cJSON *user_msg = cJSON_CreateObject();
+    cJSON_AddStringToObject(user_msg, "role", "user");
+    cJSON_AddStringToObject(user_msg, "content", transcription);
+    cJSON_AddItemToArray(messages, user_msg);
+    
+    cJSON_AddItemToObject(root, "messages", messages);
+    cJSON_AddNumberToObject(root, "temperature", 0.7);
+    cJSON_AddNumberToObject(root, "max_tokens", 150);
+    
+    char *request_body = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    
+    // Configure HTTP client
+    esp_http_client_config_t config = {
+        .url = "https://api.openai.com/v1/chat/completions",
+        .method = HTTP_METHOD_POST,
+        .event_handler = http_event_handler,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = 30000,
+    };
+    
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_header(client, "Authorization", auth_header);
+    esp_http_client_set_post_field(client, request_body, strlen(request_body));
+    
+    // Perform request
+    esp_err_t err = esp_http_client_perform(client);
+    char *ai_response = NULL;
+    
+    if (err == ESP_OK) {
+        int status = esp_http_client_get_status_code(client);
+        ESP_LOGI(TAG, "Chat API Status = %d", status);
+        
+        if (status == 200 && http_response_len > 0) {
+            // Parse JSON response
+            cJSON *json = cJSON_Parse(http_response_buffer);
+            if (json) {
+                cJSON *choices = cJSON_GetObjectItem(json, "choices");
+                if (choices && cJSON_GetArraySize(choices) > 0) {
+                    cJSON *choice = cJSON_GetArrayItem(choices, 0);
+                    cJSON *message = cJSON_GetObjectItem(choice, "message");
+                    cJSON *content = cJSON_GetObjectItem(message, "content");
+                    if (content && content->valuestring) {
+                        ai_response = strdup(content->valuestring);
+                        ESP_LOGI(TAG, "AI Response: %s", ai_response);
+                    }
+                }
+                cJSON_Delete(json);
+            }
+        }
+    } else {
+        ESP_LOGE(TAG, "Chat API request failed: %s", esp_err_to_name(err));
+    }
+    
+    free(request_body);
+    free(http_response_buffer);
+    esp_http_client_cleanup(client);
+    
+    return ai_response;
+}
+
+// Context for TTS audio capture
+typedef struct {
+    uint8_t *buffer;
+    size_t len;
+    size_t max_size;
+} tts_audio_ctx_t;
+
+/**
+ * HTTP event handler for TTS binary audio data
+ */
+static esp_err_t tts_event_handler(esp_http_client_event_t *evt)
+{
+    if (evt->event_id == HTTP_EVENT_ON_DATA) {
+        tts_audio_ctx_t *ctx = (tts_audio_ctx_t*)evt->user_data;
+        if (ctx->buffer && ctx->len + evt->data_len < ctx->max_size) {
+            memcpy(ctx->buffer + ctx->len, evt->data, evt->data_len);
+            ctx->len += evt->data_len;
+        }
+    }
+    return ESP_OK;
+}
+
+/**
+ * Convert text to speech using OpenAI TTS API and play it
+ */
+static esp_err_t speak_text(const char *text)
+{
+    ESP_LOGI(TAG, "Converting text to speech...");
+    set_led(LED_CYAN);
+    
+    // Prepare authorization header
+    char auth_header[256];
+    snprintf(auth_header, sizeof(auth_header), "Bearer %s", OPENAI_API_KEY);
+    
+    // Build request body
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "model", "tts-1");
+    cJSON_AddStringToObject(root, "input", text);
+    cJSON_AddStringToObject(root, "voice", "alloy");
+    cJSON_AddStringToObject(root, "response_format", "pcm");
+    
+    char *request_body = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    
+    // Allocate buffer for audio response
+    size_t audio_buffer_size = 512 * 1024;  // 512KB should be enough
+    uint8_t *audio_buffer = malloc(audio_buffer_size);
+    if (!audio_buffer) {
+        ESP_LOGE(TAG, "Failed to allocate audio buffer");
+        free(request_body);
+        return ESP_ERR_NO_MEM;
+    }
+    
+    tts_audio_ctx_t audio_ctx = {
+        .buffer = audio_buffer,
+        .len = 0,
+        .max_size = audio_buffer_size
+    };
+    
+    // Configure HTTP client
+    esp_http_client_config_t config = {
+        .url = "https://api.openai.com/v1/audio/speech",
+        .method = HTTP_METHOD_POST,
+        .event_handler = tts_event_handler,
+        .user_data = &audio_ctx,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = 60000,
+        .buffer_size = 4096,
+    };
+    
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    
+    esp_http_client_set_header(client, "Content-Type", "application/json");
+    esp_http_client_set_header(client, "Authorization", auth_header);
+    esp_http_client_set_post_field(client, request_body, strlen(request_body));
+    
+    // Perform request
+    esp_err_t err = esp_http_client_perform(client);
+    
+    if (err == ESP_OK) {
+        int status = esp_http_client_get_status_code(client);
+        ESP_LOGI(TAG, "TTS API Status = %d, received %d bytes", status, audio_ctx.len);
+        
+        if (status == 200 && audio_ctx.len > 0) {
+            // Play audio through speaker
+            // TTS returns mono PCM, convert to stereo
+            size_t sample_count = audio_ctx.len / 2;
+            int16_t *stereo_buffer = (int16_t*)malloc(sample_count * 4);
+            if (stereo_buffer) {
+                int16_t *mono = (int16_t*)audio_buffer;
+                for (size_t i = 0; i < sample_count; i++) {
+                    stereo_buffer[i * 2] = mono[i];
+                    stereo_buffer[i * 2 + 1] = mono[i];
+                }
+                
+                size_t bytes_written;
+                i2s_channel_write(spk_chan, stereo_buffer, sample_count * 4, &bytes_written, portMAX_DELAY);
+                ESP_LOGI(TAG, "✓ Played %d samples", sample_count);
+                
+                free(stereo_buffer);
+            }
+        }
+    } else {
+        ESP_LOGE(TAG, "TTS API request failed: %s", esp_err_to_name(err));
+    }
+    
+    free(request_body);
+    free(audio_buffer);
+    esp_http_client_cleanup(client);
+    
+    set_led(LED_GREEN);
+    return err;
+}
+
+/**
+ * Send audio to OpenAI Whisper API for transcription
+ */
+static char* transcribe_audio(const int16_t *audio_data, size_t sample_count)
+{
+    ESP_LOGI(TAG, "→ Transcribing %d samples (%.2f seconds) to Whisper API...", 
+             sample_count, (float)sample_count / SAMPLE_RATE);
+    set_led(LED_YELLOW);
+    
+    // Allocate response buffer
+    http_response_buffer = malloc(HTTP_RESPONSE_BUFFER_SIZE);
+    if (!http_response_buffer) {
+        ESP_LOGE(TAG, "Failed to allocate response buffer");
+        return NULL;
+    }
+    http_response_len = 0;
+    
+    ESP_LOGI(TAG, "  Building WAV file and multipart form data...");
+    
+    // Prepare authorization header
+    char auth_header[256];
+    snprintf(auth_header, sizeof(auth_header), "Bearer %s", OPENAI_API_KEY);
+    
+    // Configure HTTP client for multipart form data
+    esp_http_client_config_t config = {
+        .url = "https://api.openai.com/v1/audio/transcriptions",
+        .method = HTTP_METHOD_POST,
+        .event_handler = http_event_handler,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = 30000,
+    };
+    
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    
+    // Create multipart boundary
+    const char *boundary = "----WebKitFormBoundary7MA4YWxkTrZu0gW";
+    char content_type[128];
+    snprintf(content_type, sizeof(content_type), "multipart/form-data; boundary=%s", boundary);
+    
+    esp_http_client_set_header(client, "Authorization", auth_header);
+    esp_http_client_set_header(client, "Content-Type", content_type);
+    
+    // Build multipart form data
+    // Note: Sending raw PCM as WAV file with header
+    size_t wav_data_size = sample_count * 2;  // 16-bit samples
+    size_t wav_file_size = wav_data_size + 44;  // WAV header is 44 bytes
+    
+    // Allocate buffer for complete request body
+    size_t body_size = 512 + wav_file_size;
+    char *body = malloc(body_size);
+    if (!body) {
+        ESP_LOGE(TAG, "Failed to allocate request body");
+        free(http_response_buffer);
+        esp_http_client_cleanup(client);
+        return NULL;
+    }
+    
+    // Build multipart body with WAV file
+    int offset = 0;
+    offset += snprintf(body + offset, body_size - offset,
+        "--%s\r\n"
+        "Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n"
+        "Content-Type: audio/wav\r\n\r\n", boundary);
+    
+    // Write WAV header
+    memcpy(body + offset, "RIFF", 4); offset += 4;
+    uint32_t chunk_size = wav_file_size - 8;
+    memcpy(body + offset, &chunk_size, 4); offset += 4;
+    memcpy(body + offset, "WAVE", 4); offset += 4;
+    memcpy(body + offset, "fmt ", 4); offset += 4;
+    uint32_t subchunk1_size = 16;
+    memcpy(body + offset, &subchunk1_size, 4); offset += 4;
+    uint16_t audio_format = 1;  // PCM
+    memcpy(body + offset, &audio_format, 2); offset += 2;
+    uint16_t num_channels = 1;
+    memcpy(body + offset, &num_channels, 2); offset += 2;
+    uint32_t sample_rate = SAMPLE_RATE;
+    memcpy(body + offset, &sample_rate, 4); offset += 4;
+    uint32_t byte_rate = SAMPLE_RATE * 2;
+    memcpy(body + offset, &byte_rate, 4); offset += 4;
+    uint16_t block_align = 2;
+    memcpy(body + offset, &block_align, 2); offset += 2;
+    uint16_t bits_per_sample = 16;
+    memcpy(body + offset, &bits_per_sample, 2); offset += 2;
+    memcpy(body + offset, "data", 4); offset += 4;
+    uint32_t subchunk2_size = wav_data_size;
+    memcpy(body + offset, &subchunk2_size, 4); offset += 4;
+    
+    // Copy audio data
+    memcpy(body + offset, audio_data, wav_data_size); offset += wav_data_size;
+    
+    // Add form fields
+    offset += snprintf(body + offset, body_size - offset,
+        "\r\n--%s\r\n"
+        "Content-Disposition: form-data; name=\"model\"\r\n\r\n"
+        "whisper-1\r\n"
+        "--%s--\r\n", boundary, boundary);
+    
+    esp_http_client_set_post_field(client, body, offset);
+    
+    ESP_LOGI(TAG, "  Sending %d bytes to Whisper API...", offset);
+    
+    // Perform request
+    esp_err_t err = esp_http_client_perform(client);
+    char *transcription = NULL;
+    
+    if (err == ESP_OK) {
+        int status = esp_http_client_get_status_code(client);
+        ESP_LOGI(TAG, "  Whisper API Status = %d, response length = %d", status, http_response_len);
+        
+        if (status == 200 && http_response_len > 0) {
+            ESP_LOGI(TAG, "  Response: %.*s", http_response_len, http_response_buffer);
+            // Parse JSON response
+            cJSON *json = cJSON_Parse(http_response_buffer);
+            if (json) {
+                cJSON *text = cJSON_GetObjectItem(json, "text");
+                if (text && text->valuestring) {
+                    transcription = strdup(text->valuestring);
+                    ESP_LOGI(TAG, "  ✓ Transcription successful");
+                } else {
+                    ESP_LOGE(TAG, "  ✗ No 'text' field in response");
+                }
+                cJSON_Delete(json);
+            } else {
+                ESP_LOGE(TAG, "  ✗ Failed to parse JSON response");
+            }
+        } else {
+            ESP_LOGE(TAG, "  ✗ HTTP error: status=%d, response: %.*s", 
+                     status, http_response_len, http_response_buffer);
+        }
+    } else {
+        ESP_LOGE(TAG, "  ✗ Whisper API request failed: %s", esp_err_to_name(err));
+    }
+    
+    free(body);
+    free(http_response_buffer);
+    esp_http_client_cleanup(client);
+    
+    return transcription;
+}
+
+/**
  * Encode audio to Base64 (demo function) - runs in separate task
  */
-struct base64_task_params {
-    int16_t *audio_data;
-    size_t sample_count;
-};
-
-static void encode_audio_base64_task(void *pvParameters)
-{
-    struct base64_task_params *params = (struct base64_task_params *)pvParameters;
-    
-    // Calculate Base64 encoded size
-    size_t audio_bytes = params->sample_count * sizeof(int16_t);
-    size_t base64_len = 0;
-    
-    // First call to get required buffer size
-    mbedtls_base64_encode(NULL, 0, &base64_len, (const unsigned char *)params->audio_data, audio_bytes);
-    
-    // Allocate buffer
-    unsigned char *base64_audio = malloc(base64_len + 1);
-    if (!base64_audio) {
-        ESP_LOGE(TAG, "Failed to allocate Base64 buffer");
-        free(params->audio_data);
-        free(params);
-        vTaskDelete(NULL);
-        return;
-    }
-    
-    // Encode to Base64
-    size_t actual_len = 0;
-    int ret = mbedtls_base64_encode(base64_audio, base64_len, &actual_len, 
-                                     (const unsigned char *)params->audio_data, audio_bytes);
-    
-    if (ret == 0) {
-        ESP_LOGI(TAG, "✓ Base64 encoded %d samples → %d bytes", params->sample_count, actual_len);
-        // TODO: Send to OpenAI via WebSocket
-    } else {
-        ESP_LOGE(TAG, "Base64 encoding failed: %d", ret);
-    }
-    
-    free(base64_audio);
-    free(params->audio_data);
-    free(params);
-    vTaskDelete(NULL);
-}
-
-static void encode_audio_base64(const int16_t *audio_data, size_t sample_count)
-{
-    // Allocate task parameters and copy audio data
-    struct base64_task_params *params = malloc(sizeof(struct base64_task_params));
-    if (!params) {
-        ESP_LOGE(TAG, "Failed to allocate task params");
-        return;
-    }
-    
-    params->audio_data = malloc(sample_count * sizeof(int16_t));
-    if (!params->audio_data) {
-        ESP_LOGE(TAG, "Failed to copy audio data");
-        free(params);
-        return;
-    }
-    
-    memcpy(params->audio_data, audio_data, sample_count * sizeof(int16_t));
-    params->sample_count = sample_count;
-    
-    // Create task with 8KB stack
-    xTaskCreate(encode_audio_base64_task, "base64", 8192, params, 5, NULL);
-}
-
 /**
  * Initialize PDM microphone on I2S0
  */
@@ -326,55 +643,97 @@ static esp_err_t init_i2s_speaker(void)
 }
 
 /**
- * Test PDM microphone by reading samples
+ * Start recording audio from microphone
  */
-static void test_pdm_microphone(void)
+static esp_err_t start_recording(void)
 {
-    ESP_LOGI(TAG, "Testing PDM microphone...");
+    if (is_recording) {
+        ESP_LOGW(TAG, "Already recording!");
+        return ESP_ERR_INVALID_STATE;
+    }
     
-    int16_t audio_buffer[MIC_BUFFER_SIZE];
+    // Calculate max buffer size (at 24kHz, 16-bit mono)
+    recording_buffer_size = (SAMPLE_RATE * MAX_RECORDING_DURATION_MS) / 1000;  // in samples
+    size_t buffer_bytes = recording_buffer_size * sizeof(int16_t);
+    
+    ESP_LOGI(TAG, "Allocating %d bytes for recording buffer (free heap: %lu bytes)", 
+             buffer_bytes, esp_get_free_heap_size());
+    
+    recording_buffer = (int16_t *)malloc(buffer_bytes);
+    if (!recording_buffer) {
+        ESP_LOGE(TAG, "Failed to allocate recording buffer! Need %d bytes, have %lu free", 
+                 buffer_bytes, esp_get_free_heap_size());
+        return ESP_ERR_NO_MEM;
+    }
+    
+    recording_position = 0;  // in samples
+    is_recording = true;
+    
+    ESP_LOGI(TAG, "Started recording (max %d seconds, %d samples buffer)", 
+             MAX_RECORDING_DURATION_MS / 1000, recording_buffer_size);
+    set_led(LED_MAGENTA);  // Recording
+    
+    return ESP_OK;
+}
+
+/**
+ * Stop recording and prepare to send
+ */
+static esp_err_t stop_recording(void)
+{
+    if (!is_recording) {
+        ESP_LOGW(TAG, "Not recording!");
+        return ESP_ERR_INVALID_STATE;
+    }
+    
+    is_recording = false;
+    
+    float duration_sec = (float)recording_position / SAMPLE_RATE;
+    ESP_LOGI(TAG, "Stopped recording: %.2f seconds, %d samples", duration_sec, recording_position);
+    
+    set_led(LED_YELLOW);  // Processing
+    
+    return ESP_OK;
+}
+
+/**
+ * Recording task - captures audio while button is pressed
+ */
+static void recording_task(void *arg)
+{
+    int16_t audio_chunk[AUDIO_CHUNK_SIZE];
     size_t bytes_read = 0;
     
-    // Read audio samples
-    esp_err_t ret = i2s_channel_read(mic_chan, audio_buffer, sizeof(audio_buffer), &bytes_read, 1000);
-    
-    if (ret == ESP_OK) {
-        int samples_read = bytes_read / sizeof(int16_t);
-        ESP_LOGI(TAG, "Read %d samples (%d bytes)", samples_read, bytes_read);
-        
-        // Count non-zero samples
-        int non_zero = 0;
-        int16_t max_val = 0;
-        int16_t min_val = 0;
-        
-        for (int i = 0; i < samples_read; i++) {
-            if (audio_buffer[i] != 0) {
-                non_zero++;
-            }
-            if (audio_buffer[i] > max_val) max_val = audio_buffer[i];
-            if (audio_buffer[i] < min_val) min_val = audio_buffer[i];
-        }
-        
-        float non_zero_pct = (float)non_zero / samples_read * 100.0f;
-        ESP_LOGI(TAG, "Non-zero samples: %d / %d (%.1f%%)", non_zero, samples_read, non_zero_pct);
-        ESP_LOGI(TAG, "Sample range: [%d, %d]", min_val, max_val);
-        
-        if (non_zero_pct > 50.0f) {
-            ESP_LOGI(TAG, "✓ PDM microphone is working!");
+    while (1) {
+        if (is_recording) {
+            // Read audio from microphone
+            esp_err_t ret = i2s_channel_read(mic_chan, audio_chunk, sizeof(audio_chunk), &bytes_read, 100);
             
-            // TODO: Base64 encoding causes stack overflow - need to implement differently
-            // ESP_LOGI(TAG, "Testing Base64 encoding...");
-            // encode_audio_base64(audio_buffer, samples_read);
+            if (ret == ESP_OK && bytes_read > 0) {
+                size_t samples_read = bytes_read / sizeof(int16_t);
+                
+                // Check if we have space in buffer
+                if (recording_position + samples_read <= recording_buffer_size) {
+                    memcpy(&recording_buffer[recording_position], audio_chunk, bytes_read);
+                    recording_position += samples_read;
+                } else {
+                    // Buffer full - stop recording
+                    ESP_LOGW(TAG, "Recording buffer full!");
+                    is_recording = false;
+                    set_led(LED_RED);
+                }
+            }
         } else {
-            ESP_LOGW(TAG, "⚠ PDM microphone may not be working properly");
+            vTaskDelay(pdMS_TO_TICKS(100));  // Sleep when not recording
         }
-    } else {
-        ESP_LOGE(TAG, "Failed to read from microphone: %s", esp_err_to_name(ret));
     }
 }
 
 /**
- * Button press task
+ * Send recorded audio to OpenAI
+ */
+/**
+ * Button task - Push-to-Talk interface
  */
 static void button_task(void *arg)
 {
@@ -397,13 +756,60 @@ static void button_task(void *arg)
         if (last_state == true && current_state == false) {
             vTaskDelay(pdMS_TO_TICKS(50)); // Debounce
             if (gpio_get_level(BUTTON_PIN) == false) {
-                ESP_LOGI(TAG, "Button pressed!");
-                set_led(LED_MAGENTA);
+                ESP_LOGI(TAG, "Button pressed - starting recording...");
+                start_recording();
+            }
+        }
+        // Button released
+        else if (last_state == false && current_state == true) {
+            vTaskDelay(pdMS_TO_TICKS(50)); // Debounce
+            if (gpio_get_level(BUTTON_PIN) == true) {
+                ESP_LOGI(TAG, "Button released - processing...");
+                stop_recording();
                 
-                // Test microphone on button press
-                test_pdm_microphone();
+                // Check if we have audio
+                if (recording_position == 0) {
+                    ESP_LOGW(TAG, "No audio recorded!");
+                    set_led(LED_RED);
+                    vTaskDelay(pdMS_TO_TICKS(1000));
+                    set_led(LED_GREEN);
+                    continue;
+                }
                 
-                set_led(LED_GREEN);
+                ESP_LOGI(TAG, "Processing %d samples...", recording_position);
+                set_led(LED_YELLOW);  // Processing
+                
+                // Step 1: Transcribe audio
+                ESP_LOGI(TAG, "Step 1: Calling Whisper API...");
+                char *transcription = transcribe_audio(recording_buffer, recording_position);
+                if (transcription) {
+                    ESP_LOGI(TAG, "✓ Transcription: %s", transcription);
+                    
+                    // Step 2: Get AI response
+                    ESP_LOGI(TAG, "Step 2: Calling Chat API...");
+                    char *response = get_ai_response(transcription);
+                    if (response) {
+                        ESP_LOGI(TAG, "✓ AI Response: %s", response);
+                        
+                        // Step 3: Convert to speech and play
+                        ESP_LOGI(TAG, "Step 3: Calling TTS API...");
+                        speak_text(response);
+                        
+                        free(response);
+                    } else {
+                        ESP_LOGE(TAG, "✗ Failed to get AI response");
+                        set_led(LED_RED);
+                        vTaskDelay(pdMS_TO_TICKS(2000));
+                        set_led(LED_GREEN);
+                    }
+                    
+                    free(transcription);
+                } else {
+                    ESP_LOGE(TAG, "✗ Failed to transcribe audio");
+                    set_led(LED_RED);
+                    vTaskDelay(pdMS_TO_TICKS(2000));
+                    set_led(LED_GREEN);
+                }
             }
         }
         
@@ -460,12 +866,18 @@ void app_main(void)
     
     // Ready!
     ESP_LOGI(TAG, "Setup complete - Ready!");
+    ESP_LOGI(TAG, "Free heap: %lu bytes", esp_get_free_heap_size());
     set_led(LED_GREEN);
     
-    // Start button task with larger stack to prevent overflow during I2S operations
+    // Start recording task
+    xTaskCreate(recording_task, "recording_task", 4096, NULL, 10, NULL);
+    
+    // Start button task (reduced stack for REST API sequential processing)
     xTaskCreate(button_task, "button_task", 8192, NULL, 5, NULL);
     
-    // Test microphone automatically
-    vTaskDelay(pdMS_TO_TICKS(2000));
-    test_pdm_microphone();
+    ESP_LOGI(TAG, "Voice assistant ready! Press and hold button to speak.");
+    ESP_LOGI(TAG, "Max recording: %d seconds (%d samples = %d bytes)",
+             MAX_RECORDING_DURATION_MS / 1000,
+             (SAMPLE_RATE * MAX_RECORDING_DURATION_MS) / 1000,
+             (SAMPLE_RATE * MAX_RECORDING_DURATION_MS * 2) / 1000);
 }

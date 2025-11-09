@@ -15,13 +15,18 @@
  * - LED status indicators
  */
 
-#include <M5Atom.h>
+// #include <M5Atom.h>  // REMOVED - conflicts with ESP-IDF I2S driver
 #include <WiFi.h>
 #include <WebSocketsClient.h>
 #include <ArduinoJson.h>
 #include <driver/i2s.h>
+#include <FastLED.h>  // For LED control without M5Atom
 #include "config.h"
 #include "base64.h"
+
+// FastLED for SK6812 RGB LED
+#define NUM_LEDS 1
+CRGB leds[NUM_LEDS];
 
 // I2S Port Numbers
 #define I2S_PORT_MIC I2S_NUM_0
@@ -60,15 +65,23 @@ void updateLED();
 void handleButton();
 
 void setup() {
-  // Initialize M5Atom
-  M5.begin(true, false, true);  // Serial, I2C, Display
+  // Initialize Serial first
   Serial.begin(SERIAL_BAUD);
+  delay(1000);
   
   Serial.println("\n\n=== ATOM Echo Voice Assistant ===");
-  Serial.println("Build: Arduino/ESP-IDF with PDM support");
+  Serial.println("Build: Arduino/ESP-IDF with PDM support (no M5Atom lib)");
+  
+  // Initialize button pin
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+  
+  // Initialize FastLED for SK6812
+  FastLED.addLeds<WS2812, LED_PIN, GRB>(leds, NUM_LEDS);
+  FastLED.setBrightness(20);
   
   // Set initial LED color (blue = initializing)
-  M5.dis.drawpix(0, 0x0000FF);
+  leds[0] = CRGB::Blue;
+  FastLED.show();
   currentState = STATE_INIT;
   
   // Setup WiFi
@@ -85,11 +98,11 @@ void setup() {
   
   Serial.println("Setup complete - Ready!");
   currentState = STATE_READY;
-  M5.dis.drawpix(0, 0x00FF00);  // Green = ready
+  leds[0] = CRGB::Green;  // Green = ready
+  FastLED.show();
 }
 
 void loop() {
-  M5.update();
   webSocket.loop();
   
   // Handle button press
@@ -115,7 +128,8 @@ void setupWiFi() {
   Serial.println(WIFI_SSID);
   
   currentState = STATE_WIFI_CONNECTING;
-  M5.dis.drawpix(0, 0xFFFF00);  // Yellow = connecting
+  leds[0] = CRGB::Yellow;  // Yellow = connecting
+  FastLED.show();
   
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
@@ -135,7 +149,8 @@ void setupWiFi() {
   } else {
     Serial.println("\nWiFi connection failed!");
     currentState = STATE_ERROR;
-    M5.dis.drawpix(0, 0xFF0000);  // Red = error
+    leds[0] = CRGB::Red;  // Red = error
+    FastLED.show();
     while(1) delay(1000);
   }
 }
@@ -268,13 +283,15 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
     case WStype_DISCONNECTED:
       Serial.println("[WS] Disconnected!");
       currentState = STATE_WIFI_CONNECTED;
-      M5.dis.drawpix(0, 0xFFFF00);  // Yellow = reconnecting
+      leds[0] = CRGB::Yellow;  // Yellow = reconnecting
+      FastLED.show();
       break;
       
     case WStype_CONNECTED:
       Serial.println("[WS] Connected to OpenAI Realtime API!");
       currentState = STATE_WS_CONNECTED;
-      M5.dis.drawpix(0, 0x00FFFF);  // Cyan = connected
+      leds[0] = CRGB::Cyan;  // Cyan = connected
+      FastLED.show();
       
       // Send session configuration
       sendSessionUpdate();
@@ -299,7 +316,8 @@ void webSocketEvent(WStype_t type, uint8_t * payload, size_t length) {
           sessionId = doc["session"]["id"].as<String>();
           Serial.printf("[WS] Session created: %s\n", sessionId.c_str());
           currentState = STATE_READY;
-          M5.dis.drawpix(0, 0x00FF00);  // Green = ready
+          leds[0] = CRGB::Green;  // Green = ready
+          FastLED.show();
         }
         else if (strcmp(eventType, "response.audio.delta") == 0) {
           // Audio response from OpenAI
@@ -366,7 +384,8 @@ void sendSessionUpdate() {
 void recordAndSendAudio() {
   Serial.println("[MIC] Recording audio...");
   currentState = STATE_RECORDING;
-  M5.dis.drawpix(0, 0xFF00FF);  // Magenta = recording
+  leds[0] = CRGB::Magenta;  // Magenta = recording
+  FastLED.show();
   
   // Buffer for audio samples
   int16_t audioBuffer[MIC_BUFFER_SIZE];
@@ -404,17 +423,27 @@ void recordAndSendAudio() {
   }
   
   currentState = STATE_READY;
-  M5.dis.drawpix(0, 0x00FF00);  // Green = ready
+  leds[0] = CRGB::Green;  // Green = ready
+  FastLED.show();
 }
 
 void handleButton() {
-  if (M5.Btn.wasPressed()) {
-    Serial.println("[BTN] Button pressed!");
-    
-    if (currentState == STATE_READY) {
-      recordAndSendAudio();
+  static bool lastButtonState = HIGH;
+  bool currentButtonState = digitalRead(BUTTON_PIN);
+  
+  // Button pressed (active low)
+  if (lastButtonState == HIGH && currentButtonState == LOW) {
+    delay(50);  // Debounce
+    if (digitalRead(BUTTON_PIN) == LOW) {
+      Serial.println("[BTN] Button pressed!");
+      
+      if (currentState == STATE_READY) {
+        recordAndSendAudio();
+      }
     }
   }
+  
+  lastButtonState = currentButtonState;
 }
 
 void updateLED() {

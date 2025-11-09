@@ -38,5 +38,5 @@ CONFIG_LOG_MAXIMUM_LEVEL_VERBOSE=y
 # Component config
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
 
-# Main task stack size (increase for Base64 encoding)
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=16384
+# Main task stack size (increase for HTTP client + Base64 encoding)
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=24576

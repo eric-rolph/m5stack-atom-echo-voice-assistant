@@ -88,3 +88,6 @@ yarn-error.log*
 *secret*
 !*template*
 !*example*
+
+# Arduino configuration with secrets
+arduino/atom_echo_voice/config.h

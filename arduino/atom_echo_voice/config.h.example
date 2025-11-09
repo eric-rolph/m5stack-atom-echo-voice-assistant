@@ -1,0 +1,36 @@
+// Configuration for M5Stack ATOM Echo Voice Assistant
+// COPY THIS FILE TO config.h AND ADD YOUR CREDENTIALS
+
+#ifndef CONFIG_H
+#define CONFIG_H
+
+// WiFi Configuration
+#define WIFI_SSID "your-wifi-ssid"
+#define WIFI_PASSWORD "your-wifi-password"
+#define WIFI_TIMEOUT_MS 15000
+#define MAX_WIFI_RETRIES 3
+
+// OpenAI API Configuration
+#define OPENAI_API_KEY "sk-your-openai-api-key-here"
+#define REALTIME_MODEL "gpt-4o-realtime-preview-2024-10-01"
+
+// Hardware Pin Configuration
+#define BUTTON_PIN 39
+#define LED_PIN 27
+#define LED_COUNT 1
+
+// Audio Configuration
+#define SAMPLE_RATE 24000
+#define MIC_BUFFER_SIZE 1024
+#define SPK_BUFFER_SIZE 2048
+
+// PDM Microphone Pins
+#define PDM_MIC_CLK 33
+#define PDM_MIC_DATA 23
+
+// I2S Speaker Pins
+#define I2S_SPK_BCK 19
+#define I2S_SPK_WS 33
+#define I2S_SPK_DATA 22
+
+#endif
