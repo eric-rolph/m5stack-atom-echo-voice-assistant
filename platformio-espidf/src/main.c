@@ -46,7 +46,7 @@ static const char *TAG = "ATOM_ECHO";
 #define SPK_BUFFER_SIZE 2048
 
 // Voice assistant configuration
-#define MAX_RECORDING_DURATION_MS 5000   // 5 seconds max recording (120KB at 24kHz)
+#define MAX_RECORDING_DURATION_MS 2000   // 2 seconds max recording (96KB at 24kHz)
 #define AUDIO_CHUNK_SIZE 1024            // Samples per chunk for streaming
 #define HTTP_RESPONSE_BUFFER_SIZE 16384  // 16KB buffer for API responses
 
@@ -652,6 +652,20 @@ static esp_err_t start_recording(void)
         return ESP_ERR_INVALID_STATE;
     }
     
+    // Disable speaker to free GPIO 33
+    if (spk_chan) {
+        ESP_LOGI(TAG, "Disabling speaker for recording...");
+        i2s_channel_disable(spk_chan);
+        i2s_del_channel(spk_chan);
+        spk_chan = NULL;
+    }
+    
+    // Re-initialize microphone (in case it was disabled)
+    if (!mic_chan) {
+        ESP_LOGI(TAG, "Re-initializing microphone...");
+        ESP_ERROR_CHECK(init_pdm_microphone());
+    }
+    
     // Calculate max buffer size (at 24kHz, 16-bit mono)
     recording_buffer_size = (SAMPLE_RATE * MAX_RECORDING_DURATION_MS) / 1000;  // in samples
     size_t buffer_bytes = recording_buffer_size * sizeof(int16_t);
@@ -690,6 +704,18 @@ static esp_err_t stop_recording(void)
     
     float duration_sec = (float)recording_position / SAMPLE_RATE;
     ESP_LOGI(TAG, "Stopped recording: %.2f seconds, %d samples", duration_sec, recording_position);
+    
+    // Disable microphone to free GPIO 33
+    if (mic_chan) {
+        ESP_LOGI(TAG, "Disabling microphone after recording...");
+        i2s_channel_disable(mic_chan);
+        i2s_del_channel(mic_chan);
+        mic_chan = NULL;
+    }
+    
+    // Re-initialize speaker for playback
+    ESP_LOGI(TAG, "Re-initializing speaker for playback...");
+    ESP_ERROR_CHECK(init_i2s_speaker());
     
     set_led(LED_YELLOW);  // Processing
     
@@ -858,11 +884,11 @@ void app_main(void)
         return;
     }
     
-    // Initialize PDM microphone (NEW ESP-IDF I2S driver with PDM support!)
-    ESP_ERROR_CHECK(init_pdm_microphone());
-    
-    // Initialize I2S speaker
-    ESP_ERROR_CHECK(init_i2s_speaker());
+    // DON'T initialize both I2S channels at boot - they share GPIO 33!
+    // Microphone uses GPIO 33 for PDM CLK
+    // Speaker uses GPIO 33 for I2S WS
+    // We'll dynamically init/deinit based on whether we're recording or playing
+    ESP_LOGI(TAG, "I2S channels will be initialized dynamically (GPIO 33 sharing)");
     
     // Ready!
     ESP_LOGI(TAG, "Setup complete - Ready!");
