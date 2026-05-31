@@ -204,6 +204,11 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
         case WEBSOCKET_EVENT_DISCONNECTED:
             ESP_LOGI(TAG, "WEBSOCKET_EVENT_DISCONNECTED");
             ws_connected = false;
+            if (is_speaking) {
+                is_speaking = false;
+                while (i2s_busy) vTaskDelay(pdMS_TO_TICKS(10));
+                audio_init_mic();
+            }
             break;
             
         case WEBSOCKET_EVENT_DATA:
@@ -219,47 +224,50 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
                     ws_rx_buf[ws_rx_len] = '\0';
                     char *payload = ws_rx_buf;
                     
-                    if (strstr(payload, "\"type\":\"response.output_audio.delta\"")) {
+                    if (strstr(payload, "response.audio.delta")) {
                         if (!is_speaking) {
                             is_speaking = true;
                             while (i2s_busy) vTaskDelay(pdMS_TO_TICKS(10));
                             audio_init_spk();
                         }
                         
-                        char *delta_start = strstr(payload, "\"delta\":\"");
-                        if (delta_start) {
-                            delta_start += 9;
-                            char *delta_end = strchr(delta_start, '"');
-                            if (delta_end) {
-                                *delta_end = '\0';
-                                size_t decoded_len = 0;
-                                mbedtls_base64_decode(decode_buf, sizeof(decode_buf), &decoded_len, (const unsigned char*)delta_start, strlen(delta_start));
-                                
-                                if (tx_chan && decoded_len > 0) {
-                                    i2s_busy = true;
-                                    int16_t* in_samples = (int16_t*)decode_buf;
-                                    int num_samples = decoded_len / 2;
-                                    int chunk_samples = 4096; // 4096 mono samples -> 16384 bytes stereo
-                                    int16_t *spk_buf_16 = (int16_t*)spk_buf;
+                        char *delta_key = strstr(payload, "\"delta\"");
+                        if (delta_key) {
+                            char *delta_start = strchr(delta_key + 7, '"');
+                            if (delta_start) {
+                                delta_start++;
+                                char *delta_end = strchr(delta_start, '"');
+                                if (delta_end) {
+                                    *delta_end = '\0';
+                                    size_t decoded_len = 0;
+                                    mbedtls_base64_decode(decode_buf, sizeof(decode_buf), &decoded_len, (const unsigned char*)delta_start, strlen(delta_start));
                                     
-                                    for (int i = 0; i < num_samples; i += chunk_samples) {
-                                        int samples_to_process = (num_samples - i > chunk_samples) ? chunk_samples : (num_samples - i);
-                                        for (int j = 0; j < samples_to_process; j++) {
-                                            int32_t val = in_samples[i + j] * 8;
-                                            if (val > 32767) val = 32767;
-                                            if (val < -32768) val = -32768;
-                                            spk_buf_16[j * 2] = (int16_t)val;
-                                            spk_buf_16[j * 2 + 1] = (int16_t)val;
+                                    if (tx_chan && decoded_len > 0) {
+                                        i2s_busy = true;
+                                        int16_t* in_samples = (int16_t*)decode_buf;
+                                        int num_samples = decoded_len / 2;
+                                        int chunk_samples = 4096; // 4096 mono samples -> 16384 bytes stereo
+                                        int16_t *spk_buf_16 = (int16_t*)spk_buf;
+                                        
+                                        for (int i = 0; i < num_samples; i += chunk_samples) {
+                                            int samples_to_process = (num_samples - i > chunk_samples) ? chunk_samples : (num_samples - i);
+                                            for (int j = 0; j < samples_to_process; j++) {
+                                                int32_t val = in_samples[i + j] * 2; // Reduced gain from 8 to 2 to prevent hard clipping distortion
+                                                if (val > 32767) val = 32767;
+                                                if (val < -32768) val = -32768;
+                                                spk_buf_16[j * 2] = (int16_t)val;
+                                                spk_buf_16[j * 2 + 1] = (int16_t)val;
+                                            }
+                                            size_t written = 0;
+                                            i2s_channel_write(tx_chan, spk_buf, samples_to_process * 4, &written, portMAX_DELAY);
                                         }
-                                        size_t written = 0;
-                                        i2s_channel_write(tx_chan, spk_buf, samples_to_process * 4, &written, portMAX_DELAY);
+                                        i2s_busy = false;
                                     }
-                                    i2s_busy = false;
                                 }
                             }
                         }
-                    } else if (strstr(payload, "\"type\":\"response.audio.done\"") != NULL ||
-                               strstr(payload, "\"type\":\"response.done\"") != NULL) {
+                    } else if (strstr(payload, "response.audio.done") != NULL ||
+                               strstr(payload, "response.done") != NULL) {
                         if (is_speaking) {
                             vTaskDelay(pdMS_TO_TICKS(400));
                             is_speaking = false;

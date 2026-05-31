@@ -1,5 +1,7 @@
 # M5Stack ATOM Echo Voice Assistant
+A bare-metal, highly optimized OpenAI Realtime voice assistant built specifically for the [M5Stack ATOM Echo](https://docs.m5stack.com/en/atom/atomecho).
 
+This repository is a port of the original [ESP-VoCat Voice Assistant](https://github.com/eric-rolph/esp-vocat-voice-assistant), heavily modified to run on the ATOM Echo's severely constrained memory profile and handle its shared I2S/PDM GPIO pin architecture.
 This repository contains the ESP-IDF C application for turning the M5Stack ATOM Echo into an OpenAI Realtime Voice Assistant.
 
 ## Features
