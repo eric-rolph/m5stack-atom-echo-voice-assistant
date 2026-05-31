@@ -44,7 +44,7 @@ static i2s_chan_handle_t tx_chan = NULL;
 // Buffers
 #define AUDIO_CHUNK_SIZE 2048
 static uint8_t mic_buf[AUDIO_CHUNK_SIZE];
-static uint8_t spk_buf[16384];
+static uint8_t spk_buf[8192];
 static unsigned char base64_buf[AUDIO_CHUNK_SIZE * 2];
 static char json_buf[AUDIO_CHUNK_SIZE * 2 + 256];
 
@@ -160,7 +160,7 @@ void audio_init_spk(void) {
 
     i2s_chan_config_t tx_chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
     tx_chan_cfg.dma_desc_num = 6;
-    tx_chan_cfg.dma_frame_num = 1024;
+    tx_chan_cfg.dma_frame_num = 512;
     tx_chan_cfg.auto_clear = true;
     esp_err_t err = i2s_new_channel(&tx_chan_cfg, &tx_chan, NULL);
     if (err != ESP_OK) return;
@@ -187,10 +187,10 @@ void audio_init_spk(void) {
     ESP_LOGI(TAG, "Initialized I2S Speaker at 24kHz");
 }
 
-#define MAX_WS_RX_BUF 65536
+#define MAX_WS_RX_BUF 24576
 static char ws_rx_buf[MAX_WS_RX_BUF];
 static size_t ws_rx_len = 0;
-static uint8_t decode_buf[49152];
+static uint8_t decode_buf[16384];
 
 static void websocket_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
@@ -249,7 +249,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
                                         i2s_busy = true;
                                         int16_t* in_samples = (int16_t*)decode_buf;
                                         int num_samples = decoded_len / 2;
-                                        int chunk_samples = 4096; // 4096 mono samples -> 16384 bytes stereo
+                                        int chunk_samples = 2048; // 2048 mono samples -> 8192 bytes stereo
                                         int16_t *spk_buf_16 = (int16_t*)spk_buf;
                                         
                                         for (int i = 0; i < num_samples; i += chunk_samples) {
