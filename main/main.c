@@ -159,7 +159,7 @@ void audio_init_spk(void) {
     }
 
     i2s_chan_config_t tx_chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
-    tx_chan_cfg.dma_desc_num = 6;
+    tx_chan_cfg.dma_desc_num = 12; // 256ms buffer for jitter
     tx_chan_cfg.dma_frame_num = 512;
     tx_chan_cfg.auto_clear = true;
     esp_err_t err = i2s_new_channel(&tx_chan_cfg, &tx_chan, NULL);
@@ -187,10 +187,10 @@ void audio_init_spk(void) {
     ESP_LOGI(TAG, "Initialized I2S Speaker at 24kHz");
 }
 
-#define MAX_WS_RX_BUF 24576
+#define MAX_WS_RX_BUF 40960
 static char ws_rx_buf[MAX_WS_RX_BUF];
 static size_t ws_rx_len = 0;
-static uint8_t decode_buf[16384];
+static uint8_t decode_buf[30720];
 
 static void websocket_event_handler(void *handler_args, esp_event_base_t base, int32_t event_id, void *event_data)
 {
@@ -221,6 +221,8 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
                 if (ws_rx_len + data->data_len < MAX_WS_RX_BUF) {
                     memcpy(ws_rx_buf + ws_rx_len, data->data_ptr, data->data_len);
                     ws_rx_len += data->data_len;
+                } else {
+                    ESP_LOGE(TAG, "WS rx buffer overflow! Dropping data. data_len=%d, rx_len=%d", data->data_len, ws_rx_len);
                 }
                 
                 if (data->payload_offset + data->data_len == data->payload_len) {
@@ -243,7 +245,10 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
                                 if (delta_end) {
                                     *delta_end = '\0';
                                     size_t decoded_len = 0;
-                                    mbedtls_base64_decode(decode_buf, sizeof(decode_buf), &decoded_len, (const unsigned char*)delta_start, strlen(delta_start));
+                                    int err = mbedtls_base64_decode(decode_buf, sizeof(decode_buf), &decoded_len, (const unsigned char*)delta_start, strlen(delta_start));
+                                    if (err != 0) {
+                                        ESP_LOGE(TAG, "Base64 decode error: %d, len: %d", err, strlen(delta_start));
+                                    }
                                     
                                     if (tx_chan && decoded_len > 0) {
                                         i2s_busy = true;
@@ -269,10 +274,11 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
                                 }
                             }
                         }
-                    } else if (strstr(payload, "response.output_audio.done") != NULL ||
-                               strstr(payload, "response.done") != NULL) {
+                    } else if (strstr(payload, "\"type\":\"response.output_audio.done\"") != NULL ||
+                               strstr(payload, "\"type\":\"response.done\"") != NULL) {
                         if (is_speaking) {
-                            vTaskDelay(pdMS_TO_TICKS(400));
+                            ESP_LOGI(TAG, "Response done, switching to mic");
+                            vTaskDelay(pdMS_TO_TICKS(600)); // Wait longer for DMA to finish
                             is_speaking = false;
                             while (i2s_busy) vTaskDelay(pdMS_TO_TICKS(10));
                             audio_init_mic();
