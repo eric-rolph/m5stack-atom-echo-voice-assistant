@@ -1,0 +1,21 @@
+menu "M5Stack ATOM Echo Configuration"
+
+    config WIFI_SSID
+        string "WiFi SSID"
+        default "myssid"
+        help
+            WiFi SSID to connect to.
+
+    config WIFI_PASSWORD
+        string "WiFi Password"
+        default "mypassword"
+        help
+            WiFi password to connect to.
+
+    config OPENAI_API_KEY
+        string "OpenAI API Key"
+        default ""
+        help
+            Your OpenAI API Key for the Realtime API.
+
+endmenu

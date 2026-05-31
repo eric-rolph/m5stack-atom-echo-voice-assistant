@@ -1,0 +1,22 @@
+# ESP-IDF
+build/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+.ninja_deps
+.ninja_log
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+Makefile
+cmake_install.cmake
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
