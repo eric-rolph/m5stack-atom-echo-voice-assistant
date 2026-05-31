@@ -224,7 +224,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
                     ws_rx_buf[ws_rx_len] = '\0';
                     char *payload = ws_rx_buf;
                     
-                    if (strstr(payload, "response.audio.delta")) {
+                    if (strstr(payload, "response.output_audio.delta")) {
                         if (!is_speaking) {
                             is_speaking = true;
                             while (i2s_busy) vTaskDelay(pdMS_TO_TICKS(10));
@@ -266,7 +266,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
                                 }
                             }
                         }
-                    } else if (strstr(payload, "response.audio.done") != NULL ||
+                    } else if (strstr(payload, "response.output_audio.done") != NULL ||
                                strstr(payload, "response.done") != NULL) {
                         if (is_speaking) {
                             vTaskDelay(pdMS_TO_TICKS(400));
