@@ -159,6 +159,9 @@ void audio_init_spk(void) {
     }
 
     i2s_chan_config_t tx_chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_AUTO, I2S_ROLE_MASTER);
+    tx_chan_cfg.dma_desc_num = 6;
+    tx_chan_cfg.dma_frame_num = 1024;
+    tx_chan_cfg.auto_clear = true;
     esp_err_t err = i2s_new_channel(&tx_chan_cfg, &tx_chan, NULL);
     if (err != ESP_OK) return;
 
@@ -252,7 +255,7 @@ static void websocket_event_handler(void *handler_args, esp_event_base_t base, i
                                         for (int i = 0; i < num_samples; i += chunk_samples) {
                                             int samples_to_process = (num_samples - i > chunk_samples) ? chunk_samples : (num_samples - i);
                                             for (int j = 0; j < samples_to_process; j++) {
-                                                int32_t val = in_samples[i + j] * 2; // Reduced gain from 8 to 2 to prevent hard clipping distortion
+                                                int32_t val = in_samples[i + j] * 4; // Increased gain from 2 to 4 to improve volume
                                                 if (val > 32767) val = 32767;
                                                 if (val < -32768) val = -32768;
                                                 spk_buf_16[j * 2] = (int16_t)val;
