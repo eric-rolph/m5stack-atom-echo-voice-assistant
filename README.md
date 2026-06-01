@@ -6,8 +6,8 @@ A highly optimized, bare-metal OpenAI Realtime voice assistant built specificall
 
 While several other popular ESP32 voice assistant projects rely on intermediate servers or frameworks, this project takes a **pure bare-metal, direct-connection** approach:
 
-*   **No Proxies or Edge Servers:** Unlike projects like `FabrikappAgency/esp32-realtime-voice-assistant` (which uses a custom Node.js/LangChain server proxy) or `akdeb/ElatoAI` (which relies on Deno Edge / Cloudflare workers), this firmware connects **directly to the OpenAI Realtime API via Secure WebSockets**.
-*   **Pure ESP-IDF (No Arduino or ESPHome):** Unlike `fjfricke/ha-openai-realtime` (which relies on ESPHome connecting to a Home Assistant WebSocket server) or ElatoAI (Arduino framework), this is a pure ESP-IDF C application. This allows for deep hardware and memory optimization.
+*   **No Proxies or Edge Servers:** Unlike projects that use custom Node.js/LangChain server proxies or rely on Deno Edge / Cloudflare workers, this firmware connects **directly to the OpenAI Realtime API via Secure WebSockets**.
+*   **Pure ESP-IDF (No Arduino or ESPHome):** Unlike projects that rely on ESPHome connecting to a Home Assistant server or use the Arduino framework, this is a pure ESP-IDF C application. This allows for deep hardware and memory optimization.
 *   **Extreme Memory Optimization:** The ATOM Echo features a tiny 320KB internal RAM without external PSRAM. This firmware is hyper-optimized to decode large Base64 audio chunks directly into I2S DMA buffers without triggering heap fragmentation or TLS memory exhaustion.
 *   **Shared I2S/PDM Pin Wrangling:** The ATOM Echo shares a single pin (`GPIO33`) for both the PDM microphone clock and the I2S speaker word-select. This project implements seamless, real-time driver multiplexing to switch between listening and speaking modes on the fly.
 
